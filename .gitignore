@@ -1,0 +1,26 @@
+# 환경변수 / 크리덴셜
+.env
+
+# DB
+learner.db
+
+# 데이터셋 (저작권)
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# 테스트 스크립트 (배포 불필요)
+test_neo4j.py
+
+# 프로젝트 내부 문서
+CLAUDE.md
+TODO.md
