@@ -66,6 +66,7 @@ class TutoringStateMachine:
         question: QuestionResult,
         chosen: str | None,
         force_reveal: bool = False,
+        similar_questions: list | None = None,
     ) -> TutoringContext:
         """
         학습자의 답변을 받아 상태를 전이하고 TutoringContext 반환
@@ -95,7 +96,7 @@ class TutoringStateMachine:
             error_type=error_type,
         )
 
-        system_prompt = self._build_prompt(question, state, chosen, error_type, is_correct)
+        system_prompt = self._build_prompt(question, state, chosen, error_type, is_correct, similar_questions)
 
         return TutoringContext(
             question=question,
@@ -137,6 +138,7 @@ class TutoringStateMachine:
         chosen: str | None,
         error_type: str | None,
         is_correct: bool,
+        similar_questions: list | None = None,
     ) -> str:
         chosen_text = q.choices.get(chosen, "") if chosen else ""
         correct_text = q.choices.get(q.answer_num, "")
@@ -154,20 +156,34 @@ class TutoringStateMachine:
 정답: {q.answer_num}번 — {correct_text}
 """
 
+        similar_ctx = self._format_similar(similar_questions)
+
         if is_correct:
             return base + self._prompt_correct(q)
 
         if state == TutoringState.PROBE:
             return base + self._prompt_probe(q, error_type)
         elif state == TutoringState.HINT:
-            return base + self._prompt_hint(q, error_type)
+            return base + self._prompt_hint(q, error_type, similar_ctx)
         elif state == TutoringState.SCAFFOLD:
-            return base + self._prompt_scaffold(q, error_type)
+            return base + self._prompt_scaffold(q, error_type, similar_ctx)
         else:
-            return base + self._prompt_reveal(q)
+            return base + self._prompt_reveal(q, similar_ctx)
 
     def _format_choices(self, choices: dict) -> str:
         return "\n".join(f"  {k}) {v}" for k, v in choices.items())
+
+    def _format_similar(self, similar_questions: list | None) -> str:
+        if not similar_questions:
+            return ""
+        lines = []
+        for sq in similar_questions:
+            lines.append(
+                f"  - [{sq.grammar_tag} / 난이도 {sq.difficulty}] "
+                f"{sq.question[:60]}... "
+                f"(정답: {sq.answer_num}번 — {sq.choices.get(sq.answer_num, '')})"
+            )
+        return "\n[유사 문제 참고]\n" + "\n".join(lines) + "\n"
 
     def _prompt_correct(self, q: QuestionResult) -> str:
         return f"""
@@ -194,7 +210,7 @@ class TutoringStateMachine:
 - 예시) "이 문장에서 시간을 나타내는 표현을 찾아볼 수 있을까요?"
 """
 
-    def _prompt_hint(self, q: QuestionResult, error_type: str | None) -> str:
+    def _prompt_hint(self, q: QuestionResult, error_type: str | None, similar_ctx: str = "") -> str:
         vocab_hint = f"핵심 어휘: {', '.join(q.choices.values()) if q.choices else ''}"
         error_guide = {
             "어휘_부재":           "관련 어휘의 뜻을 짧게 힌트로 주세요.",
@@ -207,42 +223,45 @@ class TutoringStateMachine:
         return f"""
 학습자가 두 번째 시도에서도 틀렸습니다. [HINT 단계]
 추정 오답 원인: {error_type or "미분류"}
-
+{similar_ctx}
 지시사항:
 - 답을 직접 알려주지 마세요.
 - {error_guide}
 - {vocab_hint}
-- 힌트는 2~3문장 이내로 간결하게 주세요.
+- 유사 문제가 있다면 "비슷한 문제에서는 ~했어요" 형태로 1문장 참고 힌트를 추가하세요.
+- 힌트는 전체 3~4문장 이내로 간결하게 주세요.
 """
 
-    def _prompt_scaffold(self, q: QuestionResult, error_type: str | None) -> str:
+    def _prompt_scaffold(self, q: QuestionResult, error_type: str | None, similar_ctx: str = "") -> str:
         return f"""
 학습자가 세 번째 시도에서도 틀렸습니다. [SCAFFOLD 단계]
 추정 오답 원인: {error_type or "미분류"}
 문법 포인트: {q.grammar_tag}
-
+{similar_ctx}
 지시사항:
 - 답을 직접 말하지 않되, 정답에 매우 가까이 유도하세요.
 - 아래 단계로 사고를 유도하세요:
   1. 문장의 주어/동사/목적어를 확인하게 하세요.
   2. '{q.grammar_tag}' 규칙을 적용하는 방법을 단계별로 설명하세요.
   3. 각 보기를 하나씩 소거법으로 검토하도록 안내하세요.
+- 유사 문제가 있다면 "비슷한 문제에서는 이렇게 접근했어요" 형태로 풀이 과정을 예시로 보여주세요.
 - 마지막에 "이제 다시 한번 골라볼까요?"로 마무리하세요.
 """
 
-    def _prompt_reveal(self, q: QuestionResult) -> str:
+    def _prompt_reveal(self, q: QuestionResult, similar_ctx: str = "") -> str:
         explanation_text = "\n".join(
             f"  {k}번 {v}" for k, v in q.explanation.items()
         )
         return f"""
 정답을 공개할 단계입니다. [REVEAL 단계]
-
+{similar_ctx}
 지시사항:
 - 정답({q.answer_num}번: {q.choices.get(q.answer_num, "")})을 명확히 알려주세요.
 - 각 보기에 대한 설명을 제공하세요:
 {explanation_text}
 - '{q.grammar_tag}' 문법 포인트를 정리해주세요.
 - 학습자가 다음에 비슷한 문제를 맞힐 수 있도록 핵심 전략을 한 줄로 정리하세요.
+- 유사 문제가 있다면 추가 연습을 권유하세요.
 - 격려의 말로 마무리하세요.
 """
 

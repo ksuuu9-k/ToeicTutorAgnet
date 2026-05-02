@@ -84,15 +84,17 @@ class TutorAgent:
         # 3) 보기 번호 제출
         chosen = _detect_choice(user_message)
         if chosen:
-            ctx = self._fsm.process(self._current, chosen=chosen)
+            similar = self._fetch_similar_if_needed(self._current)
+            ctx = self._fsm.process(self._current, chosen=chosen, similar_questions=similar)
             response = self._call_claude(ctx.system_prompt, user_message)
             if ctx.is_correct or ctx.state == TutoringState.REVEAL:
                 response += "\n\n---\n다음 문제를 풀고 싶으면 **'문제 줘'** 라고 입력하세요."
             self._append_history(user_message, response)
             return response
 
-        # 4) 자유 질문 — 현재 문제 컨텍스트 포함해서 응답
-        response = self._call_claude(self._free_tutor_prompt(user_message), user_message)
+        # 4) 자유 질문 — 현재 문제 컨텍스트 + 유사 문제 포함해서 응답
+        similar = self._fetch_similar_if_needed(self._current)
+        response = self._call_claude(self._free_tutor_prompt(user_message, similar), user_message)
         self._append_history(user_message, response)
         return response
 
@@ -122,6 +124,17 @@ class TutorAgent:
         return results[0] if results else self._cypher.search(limit=1)[0]
 
     # ── 내부 메서드 ───────────────────────────────────────────
+
+    def _fetch_similar_if_needed(self, question: QuestionResult) -> list | None:
+        """HINT 단계 이상일 때만 유사 문제 조회 (PROBE는 불필요)"""
+        attempt_count = self._db.attempt_count(question.question_id)
+        if attempt_count < 1 or not question.grammar_tag:
+            return None
+        return self._cypher.get_similar_questions(
+            grammar_tag=question.grammar_tag,
+            exclude_id=question.question_id,
+            limit=2,
+        ) or None
 
     def _start_new_question(self, user_message: str) -> str:
         self._current = self.recommend_question(query=user_message)
@@ -153,7 +166,7 @@ class TutorAgent:
         )
         return message.content[0].text
 
-    def _free_tutor_prompt(self, user_message: str) -> str:
+    def _free_tutor_prompt(self, user_message: str, similar_questions: list | None = None) -> str:
         q = self._current
         if q:
             choices_str = "\n".join(f"  {k}) {v}" for k, v in q.choices.items())
@@ -167,10 +180,19 @@ class TutorAgent:
         else:
             question_ctx = "현재 진행 중인 문제 없음."
 
+        similar_ctx = ""
+        if similar_questions:
+            examples = "\n".join(
+                f"  - {sq.question[:60]}... (정답: {sq.answer_num}번 — {sq.choices.get(sq.answer_num, '')})"
+                for sq in similar_questions
+            )
+            similar_ctx = f"\n[같은 문법({q.grammar_tag}) 유사 문제 예시]\n{examples}\n"
+
         return f"""당신은 토익 전문 튜터입니다.
-{question_ctx}
+{question_ctx}{similar_ctx}
 지시사항:
 - 위 문제 맥락을 바탕으로 학습자의 질문에 친절하게 답변하세요.
+- 유사 문제 예시가 있다면 "비슷한 문제에서는 ~" 형태로 자연스럽게 활용하세요.
 - 정답은 직접 알려주지 마세요. 힌트나 설명으로 유도하세요.
 - 답변은 3~5문장 이내로 간결하게 하세요.
 """

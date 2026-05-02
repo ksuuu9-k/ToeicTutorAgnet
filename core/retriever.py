@@ -147,6 +147,21 @@ class CypherRetriever:
             rows = session.run(query, **params).data()
         return [_parse_node(r["q"]) for r in rows]
 
+    def get_similar_questions(
+        self, grammar_tag: str, exclude_id: str, limit: int = 2
+    ) -> list[QuestionResult]:
+        """같은 grammar_tag의 다른 문제 — HINT/SCAFFOLD 예시용"""
+        with self._driver.session() as session:
+            rows = session.run("""
+                MATCH (q:Question)
+                WHERE q.grammar_tag = $grammar_tag
+                  AND q.question_id <> $exclude_id
+                RETURN q
+                ORDER BY q.difficulty ASC
+                LIMIT $limit
+            """, grammar_tag=grammar_tag, exclude_id=exclude_id, limit=limit).data()
+        return [_parse_node(r["q"]) for r in rows]
+
     def get_by_grammar(self, grammar_id: str, limit: int = 5) -> list[QuestionResult]:
         """GrammarRule 노드 경유 — related_grammar_id 기준 탐색"""
         with self._driver.session() as session:
